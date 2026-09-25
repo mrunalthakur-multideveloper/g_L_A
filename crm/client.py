@@ -74,20 +74,25 @@ def is_null_domain(val: Any) -> bool:
 
 def fetch_active_clients(
     custom_url: Optional[str] = None,
-    timeout: int = 30
+    timeout: int = 15,
+    max_retries: int = 3
 ) -> List[Dict[str, Any]]:
     """
     Hits the CRM route: GET https://api.applyus.org/api/clients/active
     Authenticates with header 'x-api-key' loaded from environment.
+    Retries up to max_retries on timeout/connection issues.
     Extracts each active client's domain and country.
     If a client's domain is NULL or empty, skips that client completely and moves to the next.
+    Falls back gracefully to local crm_active_clients.json cache if offline.
     """
     url = custom_url or get_crm_url()
     api_key = get_crm_api_key()
+    cache_file = "crm_active_clients.json"
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "ApplyUs-ATS-Scraper/1.0.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Connection": "close"
     }
     if api_key:
         headers["x-api-key"] = api_key
@@ -95,43 +100,49 @@ def fetch_active_clients(
     session = get_requests_session(timeout=timeout, headers=headers)
     raw_clients_data = []
 
-    try:
-        print(f"📡 Connecting to ApplyUs CRM at {url}...")
-        resp = session.get(url, timeout=timeout)
-        if resp.status_code == 200:
-            try:
-                res_json = resp.json()
-            except Exception:
-                res_json = {}
-            if isinstance(res_json, dict):
-                data_val = res_json.get("data")
-                if isinstance(data_val, list):
-                    raw_clients_data = data_val
-                elif isinstance(res_json.get("clients"), list):
-                    raw_clients_data = res_json.get("clients")
-                elif isinstance(res_json.get("results"), list):
-                    raw_clients_data = res_json.get("results")
-            elif isinstance(res_json, list):
-                raw_clients_data = res_json
-            if not isinstance(raw_clients_data, list):
-                raw_clients_data = []
-            print(f"✅ Received {len(raw_clients_data)} client records from CRM API")
-        else:
-            print(f"⚠️ CRM API returned HTTP status {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        print(f"⚠️ Could not reach CRM endpoint ({url}): {e}")
+    print(f"📡 Connecting to ApplyUs CRM at {url}...")
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code == 200:
+                try:
+                    res_json = resp.json()
+                except Exception:
+                    res_json = {}
+                if isinstance(res_json, dict):
+                    data_val = res_json.get("data")
+                    if isinstance(data_val, list):
+                        raw_clients_data = data_val
+                    elif isinstance(res_json.get("clients"), list):
+                        raw_clients_data = res_json.get("clients")
+                    elif isinstance(res_json.get("results"), list):
+                        raw_clients_data = res_json.get("results")
+                elif isinstance(res_json, list):
+                    raw_clients_data = res_json
+                if not isinstance(raw_clients_data, list):
+                    raw_clients_data = []
+                print(f"✅ Received {len(raw_clients_data)} client records from CRM API")
+                
+                # Save cache for offline/future fallback
+                if raw_clients_data:
+                    try:
+                        with open(cache_file, "w", encoding="utf-8") as cf:
+                            json.dump(raw_clients_data, cf, indent=2)
+                    except Exception:
+                        pass
+                break
+            else:
+                print(f"⚠️ Attempt {attempt}/{max_retries}: CRM API returned HTTP status {resp.status_code}")
+        except Exception as e:
+            if attempt < max_retries:
+                print(f"⚠️ Attempt {attempt}/{max_retries} failed ({e}). Retrying in {attempt}s...")
+                import time
+                time.sleep(attempt)
+            else:
+                print(f"⚠️ Could not reach CRM endpoint after {max_retries} attempts: {e}")
 
-    # If CRM endpoint returned 0 records or is offline, check configured CRM_CLIENT_DOMAIN in .env
-    client_domain_env = (os.getenv("CRM_CLIENT_DOMAIN") or os.getenv("CLIENT_DOMAIN") or "").strip()
-    if not raw_clients_data and client_domain_env and not is_null_domain(client_domain_env):
-        raw_clients_data = [{
-            "domain": client_domain_env,
-            "country": os.getenv("TARGET_COUNTRY", "USA"),
-            "full_name": "Active Client"
-        }]
-        print(f"ℹ️ CRM returned 0 records; loaded active client domain from .env: '{client_domain_env}'")
-    elif not raw_clients_data:
-        cache_file = "crm_active_clients.json"
+    # If CRM endpoint returned 0 records or is offline, check cache file
+    if not raw_clients_data:
         if os.path.exists(cache_file):
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
@@ -140,9 +151,19 @@ def fetch_active_clients(
                         raw_clients_data = cached
                     elif isinstance(cached, dict) and "data" in cached:
                         raw_clients_data = cached["data"]
-                print(f"📂 Loaded {len(raw_clients_data)} fallback active clients from {cache_file}")
+                print(f"📂 Loaded {len(raw_clients_data)} active clients from local cache ({cache_file})")
             except Exception:
                 pass
+
+    # If still empty, check configured CRM_CLIENT_DOMAIN in .env
+    client_domain_env = (os.getenv("CRM_CLIENT_DOMAIN") or os.getenv("CLIENT_DOMAIN") or "").strip()
+    if not raw_clients_data and client_domain_env and not is_null_domain(client_domain_env):
+        raw_clients_data = [{
+            "domain": client_domain_env,
+            "country": os.getenv("TARGET_COUNTRY", "USA"),
+            "full_name": "Active Client"
+        }]
+        print(f"ℹ️ Loaded active client domain from .env: '{client_domain_env}'")
 
     # Extract domain & country pairs from desired_job_titles and domain with strict NULL skipping
     seen_pairs = set()
