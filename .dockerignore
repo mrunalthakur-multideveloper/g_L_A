@@ -1,0 +1,13 @@
+.git
+.github
+.env
+__pycache__
+*/__pycache__
+*/*/__pycache__
+.pytest_cache
+*.csv
+output/*.csv
+output/crm/*.csv
+*.log
+*.tmp
+.DS_Store

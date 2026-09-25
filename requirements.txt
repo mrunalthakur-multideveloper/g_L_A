@@ -1,0 +1,12 @@
+# Core Dependencies
+python-dotenv>=1.0.0
+requests>=2.31.0
+urllib3>=2.0.0
+beautifulsoup4>=4.12.0
+
+# Database Connectivity (Neon PostgreSQL & Supabase)
+psycopg2-binary>=2.9.9
+supabase>=1.2.0
+
+# Data processing (optional)
+pandas>=2.0.0

@@ -1,0 +1,77 @@
+name: 🚀 24-Hour ATS Job Scraper & CRM Sync Pipeline
+
+on:
+  schedule:
+    # Run every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      hours_window:
+        description: 'Hours window to scrape (e.g. 24)'
+        required: false
+        default: '24'
+      workers:
+        description: 'Number of parallel scraping workers'
+        required: false
+        default: '25'
+      target_date:
+        description: 'Target Date YYYY-MM-DD (leave empty for last N hours)'
+        required: false
+        default: ''
+
+jobs:
+  run-scraper-pipeline:
+    name: Scrape 24h ATS Jobs & Sync to Neon DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🧪 Run Unit & Integration Tests
+        run: |
+          python -m unittest discover tests
+
+      - name: 🚀 Run CRM 24-Hour Scraper Pipeline
+        env:
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          NEON_TABLE: ${{ secrets.NEON_TABLE || 'links' }}
+          CRM_BACKEND_URL: ${{ secrets.CRM_BACKEND_URL || 'https://api.applyus.org' }}
+          CRM_API_KEY: ${{ secrets.CRM_API_KEY }}
+          INTERNAL_SERVICE_API_KEY: ${{ secrets.INTERNAL_SERVICE_API_KEY }}
+          HOURS_WINDOW: ${{ inputs.hours_window || '24' }}
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ inputs.hours_window }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --hours ${{ inputs.hours_window }}"
+          fi
+          if [ -n "${{ inputs.workers }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --workers ${{ inputs.workers }}"
+          fi
+          if [ -n "${{ inputs.target_date }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --target-date ${{ inputs.target_date }}"
+          fi
+
+          python run_crm_pipeline.py $EXTRA_ARGS
+
+      - name: 📤 Upload Domain CSV Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crm-domain-csvs-${{ github.run_id }}
+          path: |
+            greenhouse_*_jobs.csv
+            output/crm/*.csv
+          retention-days: 14
