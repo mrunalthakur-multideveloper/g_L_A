@@ -1,6 +1,6 @@
 """
-ApplyUs CRM Active Clients Integration Client
-Fetches active clients from ApplyUs CRM endpoint and extracts deduplicated (domain, country) pairs.
+CRM Active Clients Integration Client
+Fetches active clients from CRM endpoint and extracts deduplicated (domain, country) pairs.
 """
 
 import os
@@ -78,7 +78,7 @@ def fetch_active_clients(
     max_retries: int = 3
 ) -> List[Dict[str, Any]]:
     """
-    Hits the CRM route: GET https://api.applyus.org/api/clients/active
+    Hits the CRM route: GET active clients endpoint
     Authenticates with header 'x-api-key' loaded from environment.
     Retries up to max_retries on timeout/connection issues.
     Extracts each active client's domain and country.
@@ -91,7 +91,7 @@ def fetch_active_clients(
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Connection": "close"
     }
     if api_key:
@@ -100,7 +100,7 @@ def fetch_active_clients(
     session = get_requests_session(timeout=timeout, headers=headers)
     raw_clients_data = []
 
-    print(f"📡 Connecting to ApplyUs CRM at {url}...")
+    print(f"📡 Connecting to CRM at {url}...")
     for attempt in range(1, max_retries + 1):
         try:
             resp = session.get(url, timeout=timeout)

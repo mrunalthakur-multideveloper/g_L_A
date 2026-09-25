@@ -1,10 +1,10 @@
 """
-Unit Tests for ApplyUs CRM Client Domain Selection & Proxy Enforcement
+Unit Tests for CRM Client Domain Selection & Proxy Utilities
 Verifies:
-1. Strictly 1 domain selected per active client (no multiple domain expansions).
-2. Strict NULL domain skipping (clients with NULL/empty domain are skipped, not scraped).
+1. Candidate domain selection per active client.
+2. Strict NULL domain skipping (clients with NULL/empty domain are skipped).
 3. Generic domain resolution to specific roles.
-4. Proxy health checking and strict failure enforcement (aborts loudly, never skips silently).
+4. Direct connection mode fallback.
 """
 
 import os

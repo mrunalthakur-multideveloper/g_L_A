@@ -1,5 +1,5 @@
 """
-Unified Multi-Source ATS Job Scraper & Classification Pipeline
+Unified Multi-Source ATS Job Retrieval & Classification Pipeline
 Crawls Greenhouse, Lever, and Ashby, applies USA & Target Date filters, deduplicates,
 executes multi-level IT/Non-IT classification, and writes separate IT and Non-IT CSVs + PostgreSQL.
 """
@@ -140,20 +140,20 @@ def scrape_company_worker(row: Dict[str, str], target_date: str, last_24h: bool)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-Source ATS Scraper with IT Job Classification")
+    parser = argparse.ArgumentParser(description="Multi-Source ATS Job Retrieval with IT Job Classification")
     parser.add_argument("--target-date", type=str, default=os.getenv("TARGET_DATE"), help="Target publication date (YYYY-MM-DD)")
-    parser.add_argument("--all", action="store_true", help="Scrape all available dates without date filter")
+    parser.add_argument("--all", action="store_true", help="Retrieve all available dates without date filter")
     parser.add_argument("--24h", dest="last_24h", action="store_true", help="Filter jobs posted in last 24 hours")
-    parser.add_argument("--workers", type=int, default=25, help="Number of parallel scraping threads (default: 25)")
+    parser.add_argument("--workers", type=int, default=25, help="Number of parallel worker threads (default: 25)")
     parser.add_argument("--input-file", type=str, default="us_companies.json", help="Input file containing active companies (JSON or CSV)")
     parser.add_argument("--sample", type=int, default=None, help="Limit number of companies for quick testing")
-    parser.add_argument("--scrape-only", action="store_true", help="Scrape Greenhouse, Lever, and Ashby jobs and save to scraped_jobs.csv without running classification")
+    parser.add_argument("--scrape-only", action="store_true", help="Fetch Greenhouse, Lever, and Ashby jobs and save to CSV without running classification")
     parser.add_argument("--table", type=str, default=os.getenv("NEON_TABLE") or "links", help="Target database table name (default: links)")
     parser.add_argument("--no-db", action="store_true", help="Disable database storage to Neon DB / Supabase")
-    parser.add_argument("--only-it", action="store_true", help="Store only classified IT jobs into database (default: False, stores all scraped jobs)")
-    parser.add_argument("--crm", action="store_true", help="Run ApplyUs CRM active clients domain-by-domain pipeline")
-    parser.add_argument("--crm-url", type=str, default=None, help="Custom ApplyUs CRM active clients endpoint URL")
-    parser.add_argument("--hours", type=int, default=int(os.getenv("HOURS_WINDOW", "24")), help="Scraping window in hours for CRM pipeline (default: 24)")
+    parser.add_argument("--only-it", action="store_true", help="Store only classified IT jobs into database (default: False, stores all jobs)")
+    parser.add_argument("--crm", action="store_true", help="Run active clients domain-by-domain pipeline")
+    parser.add_argument("--crm-url", type=str, default=None, help="Custom CRM active clients endpoint URL")
+    parser.add_argument("--hours", type=int, default=int(os.getenv("HOURS_WINDOW", "24")), help="Time window in hours for CRM pipeline (default: 24)")
     parser.add_argument("--list-domains", action="store_true", help="Inspect and display active CRM domains and existing Neon DB domains")
     
     args = parser.parse_args()
@@ -187,7 +187,7 @@ def main():
             last_24h = True
             
     print("=" * 60)
-    print("🚀 ADVANCED IT JOB SCRAPER & CLASSIFICATION PIPELINE")
+    print("🚀 ADVANCED IT JOB RETRIEVAL & CLASSIFICATION PIPELINE")
     print(f"📅 Filter Mode: {'ALL DATES' if args.all else (f'Target Date: {target_date}' if target_date else 'Last 24 Hours')}")
     print(f"📁 Input File: {args.input_file}")
     print(f"⚙️ Workers: {args.workers}")

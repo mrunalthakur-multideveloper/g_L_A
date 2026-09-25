@@ -22,6 +22,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application source code
 COPY . .
 
-# Default command: Run the 24-hour CRM active clients scraper pipeline
+# Default command: Run the 24-hour CRM active clients job pipeline
 ENTRYPOINT ["python", "run_crm_pipeline.py"]
 CMD ["--hours", "24"]

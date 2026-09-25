@@ -1,5 +1,5 @@
 """
-ApplyUs CRM & Neon DB Domain Inspector
+CRM & Neon DB Domain Inspector
 Hits the CRM route to inspect active client domains, and queries Neon DB (public.links)
 to show all existing domains, job counts, and sync status side-by-side.
 """
@@ -23,7 +23,7 @@ from database.postgres import get_database_domain_summary, get_neon_connection
 
 def main():
     print("=" * 75)
-    print("🔍 APPLYUS CRM & NEON DATABASE DOMAIN INSPECTOR")
+    print("🔍 CRM & NEON DATABASE DOMAIN INSPECTOR")
     print("=" * 75)
 
     # 1. Inspect CRM Active Clients

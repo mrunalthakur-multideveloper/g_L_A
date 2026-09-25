@@ -1,6 +1,6 @@
 """
-ApplyUs CRM Scraper Pipeline Orchestrator
-Iterates domain-by-domain for active CRM clients, runs multi-platform ATS scraping for target country & date window,
+Active Clients Job Pipeline Orchestrator
+Iterates domain-by-domain for active CRM clients, runs multi-platform ATS job retrieval for target country & date window,
 populates search_keyword with client domain, writes dedicated per-domain CSVs, and syncs to Neon PostgreSQL table.
 """
 
@@ -27,7 +27,7 @@ from .matcher import does_job_match_client_domain
 
 
 def load_all_company_slugs(input_file: str = "us_companies.json") -> List[Dict[str, str]]:
-    """Loads company list for multi-platform ATS scraping."""
+    """Loads company list for multi-platform ATS retrieval."""
     from main import load_companies_to_scrape
     return load_companies_to_scrape(input_file)
 
@@ -39,7 +39,7 @@ def scrape_single_company_for_country(
     last_24_hours: bool = False,
     hours_window: Optional[int] = None
 ) -> List[NormalizedJob]:
-    """Scrapes a company board and applies country and date filtering."""
+    """Retrieves a company board and applies country and date filtering."""
     platform = row.get("platform", "").lower().strip()
     slug = row.get("slug", "").strip()
     if not slug:
@@ -80,10 +80,10 @@ def run_crm_domain_pipeline(
     override_clients: Optional[List[Dict[str, str]]] = None
 ) -> Dict[str, Any]:
     """
-    Executes the full ApplyUs CRM active clients workflow:
-    1. Fetches active clients from ApplyUs CRM endpoint
+    Executes the active clients workflow:
+    1. Fetches active clients from CRM endpoint
     2. Deduplicates (domain, country) pairs
-    3. Scrapes ATS platforms for target country and date window (24-48h)
+    3. Retrieves ATS platforms for target country and date window (24h)
     4. Matches and classifies jobs per client domain
     5. Sets search_keyword = client domain
     6. Writes dedicated per-domain CSVs (e.g. greenhouse_{domain}_jobs.csv)
@@ -91,13 +91,13 @@ def run_crm_domain_pipeline(
     """
     start_time = time.time()
     print("=" * 65)
-    print("🚀 APPLYUS CRM ACTIVE CLIENTS SCRAPER & SYNC PIPELINE")
+    print("🚀 ACTIVE CLIENTS JOB RETRIEVAL & SYNC PIPELINE")
     print(f"⏰ Time Window: Last {hours_window} hours (or Target Date: {target_date or 'Latest'})")
     print(f"🗄️ Database Sync: {'DISABLED (--no-db)' if no_db else f'Neon PostgreSQL (table: {table_name})'}")
-    print(f"⚙️ Scraping Workers: {workers}")
+    print(f"⚙️ Parallel Workers: {workers}")
     print("=" * 65)
 
-    # Enforce proxy health check before proceeding
+    # Proxy check if configured
     enforce_proxy_or_abort()
 
     # 1. Fetch active clients
@@ -110,7 +110,7 @@ def run_crm_domain_pipeline(
         print("⚠️ No active clients found from CRM endpoint or fallback.")
         return {"clients_processed": 0, "total_jobs_scraped": 0, "total_jobs_synced": 0}
 
-    print("\n📋 ACTIVE CLIENT DOMAINS TO SCRAPE:")
+    print("\n📋 ACTIVE CLIENT DOMAINS:")
     for idx, c in enumerate(active_clients, 1):
         cname = f" ({c['client_name']})" if c.get('client_name') else ""
         print(f"  {idx:2d}. DOMAIN: {c['domain']:<32} | COUNTRY: {c['country']:<10}{cname}")
@@ -122,7 +122,7 @@ def run_crm_domain_pipeline(
         companies = companies[:sample_companies]
     print(f"🏢 Loaded {len(companies):,} company boards across ATS platforms\n")
 
-    # Group clients by country to optimize scraping passes
+    # Group clients by country to optimize retrieval passes
     country_groups: Dict[str, List[Dict[str, Any]]] = {}
     for c in active_clients:
         country_key = c.get("country", "USA").upper()
@@ -137,14 +137,14 @@ def run_crm_domain_pipeline(
     # 3. Process country by country, domain by domain
     for country, client_list in country_groups.items():
         print("=" * 65)
-        print(f"🌍 COUNTRY: {country} — Scraping for {len(client_list)} Active Client Domain(s)")
+        print(f"🌍 COUNTRY: {country} — Getting jobs for {len(client_list)} Active Client Domain(s)")
         print("=" * 65)
 
-        # Scrape all active boards for this country with live progress
+        # Retrieve all active boards for this country with live progress
         raw_jobs: List[NormalizedJob] = []
         completed_boards = 0
         total_boards = len(companies)
-        print(f"⏳ Starting parallel scrape across {total_boards:,} company boards ({workers} worker threads)...", flush=True)
+        print(f"⏳ Starting parallel retrieval across {total_boards:,} company boards ({workers} worker threads)...", flush=True)
 
         try:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -171,9 +171,9 @@ def run_crm_domain_pipeline(
                         pct = (completed_boards / total_boards) * 100
                         print(f"  📊 Boards: {completed_boards:,}/{total_boards:,} ({pct:.1f}%) | Matching Jobs: {len(raw_jobs):,}", flush=True)
         except KeyboardInterrupt:
-            print(f"\n⚠️ Scraping interrupted by user. Proceeding with {len(raw_jobs):,} jobs collected so far...\n", flush=True)
+            print(f"\n⚠️ Process interrupted by user. Proceeding with {len(raw_jobs):,} jobs collected so far...\n", flush=True)
 
-        print(f"\n📥 Fetched {len(raw_jobs):,} total raw job postings for country {country}", flush=True)
+        print(f"\n📥 Fetched {len(raw_jobs):,} total job postings for country {country}", flush=True)
 
         # Deduplicate raw jobs
         seen_job_ids = set()
@@ -197,7 +197,7 @@ def run_crm_domain_pipeline(
 
             print("\n" + "-" * 65)
             print(f"🎯 [DOMAIN {client_idx}/{len(client_list)}]: '{domain_name}' | COUNTRY: '{country}'{client_display}")
-            print(f"   Searching and filtering scraped jobs matching domain '{domain_name}'...")
+            print(f"   Searching and matching jobs for domain '{domain_name}'...")
             print("-" * 65)
 
             matched_jobs_for_domain: List[NormalizedJob] = []
@@ -205,7 +205,7 @@ def run_crm_domain_pipeline(
                 if does_job_match_client_domain(j, domain_name):
                     # Clone job to avoid search_keyword collision between domains
                     cloned_job = copy.deepcopy(j)
-                    # Requirement 5: Ensure scraped jobs have search_keyword populated with active client domain
+                    # Requirement 5: Ensure jobs have search_keyword populated with active client domain
                     cloned_job.search_keyword = domain_name
                     matched_jobs_for_domain.append(cloned_job)
 
@@ -250,7 +250,7 @@ def run_crm_domain_pipeline(
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 65)
-    print("📊 APPLYUS CRM PIPELINE SUMMARY — DOMAIN BREAKDOWN")
+    print("📊 ACTIVE CLIENTS PIPELINE SUMMARY — DOMAIN BREAKDOWN")
     print("=" * 65)
     print(f"{'DOMAIN':<32} {'COUNTRY':<10} {'JOBS':<8} {'CSV FILE':<35} {'DB'}")
     print("-" * 95)

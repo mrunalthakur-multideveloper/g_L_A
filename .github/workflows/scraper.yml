@@ -1,4 +1,4 @@
-name: 🚀 24-Hour ATS Job Scraper & CRM Sync Pipeline
+name: 🚀 24-Hour Job Retrieval & CRM Sync Pipeline
 
 on:
   schedule:
@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       hours_window:
-        description: 'Hours window to scrape (e.g. 24)'
+        description: 'Hours window to retrieve (e.g. 24)'
         required: false
         default: '24'
       workers:
-        description: 'Number of parallel scraping workers'
+        description: 'Number of parallel worker threads'
         required: false
         default: '25'
       target_date:
@@ -20,8 +20,8 @@ on:
         default: ''
 
 jobs:
-  run-scraper-pipeline:
-    name: Scrape 24h ATS Jobs & Sync to Neon DB
+  run-pipeline:
+    name: Retrieve 24h Jobs & Sync to Neon DB
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -44,7 +44,7 @@ jobs:
         run: |
           python -m unittest discover tests
 
-      - name: 🚀 Run CRM 24-Hour Scraper Pipeline
+      - name: 🚀 Run 24-Hour Job Pipeline
         env:
           NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           NEON_TABLE: ${{ secrets.NEON_TABLE || 'links' }}

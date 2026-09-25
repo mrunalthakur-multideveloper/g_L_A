@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo ========================================================
-echo Running ApplyUs CRM Active Clients Scraper Pipeline
+echo Running Active Clients Job Pipeline
 echo ========================================================
 python run_crm_pipeline.py
 pause
