@@ -23,22 +23,21 @@ from database.postgres import get_database_domain_summary, get_neon_connection
 
 def main():
     print("=" * 75)
-    print("🔍 CRM & NEON DATABASE DOMAIN INSPECTOR")
+    print("🔍 DATABASE & TARGET DOMAINS INSPECTOR")
     print("=" * 75)
 
-    # 1. Inspect CRM Active Clients
-    print(f"\n📡 1. Hitting CRM Active Clients Route: {get_crm_url()}...")
+    # 1. Inspect Target Domains
+    print(f"\n📡 1. Querying Target Domains Route: {get_crm_url()}...")
     active_clients = fetch_active_clients()
 
-    print("\n📋 ACTIVE CLIENT DOMAINS FROM CRM API:")
-    print(f"{'#':<3} {'DOMAIN':<32} {'COUNTRY':<12} {'CLIENT NAME':<25}")
+    print("\n📋 TARGET DOMAINS:")
+    print(f"{'#':<3} {'DOMAIN':<35} {'COUNTRY':<12}")
     print("-" * 75)
     if active_clients:
         for idx, c in enumerate(active_clients, 1):
-            cname = c.get('client_name') or 'N/A'
-            print(f"{idx:<3} {c['domain']:<32} {c['country']:<12} {cname:<25}")
+            print(f"{idx:<3} {c['domain']:<35} {c['country']:<12}")
     else:
-        print("  (No active clients returned from endpoint or cache)")
+        print("  (No target domains returned from endpoint or cache)")
 
     # 2. Inspect Neon Database Domains
     print("\n" + "=" * 75)

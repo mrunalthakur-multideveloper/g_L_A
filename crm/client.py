@@ -1,6 +1,6 @@
 """
-CRM Active Clients Integration Client
-Fetches active clients from CRM endpoint and extracts deduplicated (domain, country) pairs.
+Data Integration Client
+Fetches target domains from data endpoint and extracts deduplicated (domain, country) pairs.
 """
 
 import os
@@ -25,7 +25,7 @@ DEFAULT_CRM_URL = "https://api.applyus.org/api/clients/active"
 
 
 def get_crm_url() -> str:
-    """Returns the CRM active clients endpoint URL."""
+    """Returns the data endpoint URL."""
     backend_url = os.getenv("CRM_BACKEND_URL", "").strip()
     if backend_url:
         backend_url = backend_url.rstrip("/")
@@ -39,7 +39,7 @@ def get_crm_url() -> str:
 
 def get_crm_api_key() -> str:
     """
-    Retrieves the CRM API key from environment variables.
+    Retrieves the API key from environment variables.
     Checks INTERNAL_SERVICE_API_KEY, then CRM_API_KEY, then CRM_KEY.
     """
     return (
@@ -78,11 +78,11 @@ def fetch_active_clients(
     max_retries: int = 3
 ) -> List[Dict[str, Any]]:
     """
-    Hits the CRM route: GET active clients endpoint
+    Hits the data endpoint: GET active target records
     Authenticates with header 'x-api-key' loaded from environment.
     Retries up to max_retries on timeout/connection issues.
-    Extracts each active client's domain and country.
-    If a client's domain is NULL or empty, skips that client completely and moves to the next.
+    Extracts each target domain and country.
+    If a record's domain is NULL or empty, skips that record completely and moves to the next.
     Falls back gracefully to local crm_active_clients.json cache if offline.
     """
     url = custom_url or get_crm_url()
@@ -100,7 +100,7 @@ def fetch_active_clients(
     session = get_requests_session(timeout=timeout, headers=headers)
     raw_clients_data = []
 
-    print(f"📡 Connecting to CRM at {url}...")
+    print(f"📡 Connecting to data endpoint at {url}...")
     for attempt in range(1, max_retries + 1):
         try:
             resp = session.get(url, timeout=timeout)
@@ -121,7 +121,7 @@ def fetch_active_clients(
                     raw_clients_data = res_json
                 if not isinstance(raw_clients_data, list):
                     raw_clients_data = []
-                print(f"✅ Received {len(raw_clients_data)} client records from CRM API")
+                print(f"✅ Received {len(raw_clients_data)} records from API")
                 
                 # Save cache for offline/future fallback
                 if raw_clients_data:
@@ -132,16 +132,16 @@ def fetch_active_clients(
                         pass
                 break
             else:
-                print(f"⚠️ Attempt {attempt}/{max_retries}: CRM API returned HTTP status {resp.status_code}")
+                print(f"⚠️ Attempt {attempt}/{max_retries}: API returned HTTP status {resp.status_code}")
         except Exception as e:
             if attempt < max_retries:
                 print(f"⚠️ Attempt {attempt}/{max_retries} failed ({e}). Retrying in {attempt}s...")
                 import time
                 time.sleep(attempt)
             else:
-                print(f"⚠️ Could not reach CRM endpoint after {max_retries} attempts: {e}")
+                print(f"⚠️ Could not reach endpoint after {max_retries} attempts: {e}")
 
-    # If CRM endpoint returned 0 records or is offline, check cache file
+    # If endpoint returned 0 records or is offline, check cache file
     if not raw_clients_data:
         if os.path.exists(cache_file):
             try:
@@ -151,7 +151,7 @@ def fetch_active_clients(
                         raw_clients_data = cached
                     elif isinstance(cached, dict) and "data" in cached:
                         raw_clients_data = cached["data"]
-                print(f"📂 Loaded {len(raw_clients_data)} active clients from local cache ({cache_file})")
+                print(f"📂 Loaded {len(raw_clients_data)} records from local cache ({cache_file})")
             except Exception:
                 pass
 
@@ -161,9 +161,9 @@ def fetch_active_clients(
         raw_clients_data = [{
             "domain": client_domain_env,
             "country": os.getenv("TARGET_COUNTRY", "USA"),
-            "full_name": "Active Client"
+            "full_name": "Target Domain"
         }]
-        print(f"ℹ️ Loaded active client domain from .env: '{client_domain_env}'")
+        print(f"ℹ️ Loaded target domain from .env: '{client_domain_env}'")
 
     # Extract domain & country pairs from desired_job_titles and domain with strict NULL skipping
     seen_pairs = set()
@@ -176,7 +176,7 @@ def fetch_active_clients(
         if not isinstance(item, dict):
             continue
 
-        client_name = item.get("full_name") or f"{item.get('first_name', '')} {item.get('last_name', '')}".strip() or item.get("name", "Unknown Client")
+        client_name = item.get("full_name") or f"{item.get('first_name', '')} {item.get('last_name', '')}".strip() or item.get("name", "Target")
         country_raw = (
             item.get("country")
             or item.get("target_country")
@@ -198,7 +198,7 @@ def fetch_active_clients(
         if isinstance(desired_titles, str):
             desired_titles = [desired_titles] if not is_null_domain(desired_titles) else []
 
-        # Collect candidate search domains from desired_job_titles and client domain
+        # Collect candidate search domains from desired_job_titles and domain
         candidate_domains: List[str] = []
 
         # 1. Add valid titles from desired_job_titles
@@ -214,9 +214,9 @@ def fetch_active_clients(
             if d_raw_str and d_raw_str.lower() not in GENERIC_DOMAINS and d_raw_str not in candidate_domains:
                 candidate_domains.append(d_raw_str)
 
-        # STRICT NULL CHECK: If no valid search domains found for client, skip completely
+        # STRICT NULL CHECK: If no valid search domains found, skip completely
         if not candidate_domains:
-            print(f"  ⏭️ [SKIPPED] Client '{client_name}': domain is NULL / empty. Skipping and moving to next client.")
+            print(f"  ⏭️ [SKIPPED] Record '{client_name}': domain is NULL / empty. Skipping.")
             continue
 
         for domain_name in candidate_domains:
@@ -248,5 +248,5 @@ def fetch_active_clients(
         except Exception:
             pass
 
-    print(f"🎯 Extracted {len(deduped_clients)} valid active client (domain, country) pairs (NULL domains excluded)\n")
+    print(f"🎯 Extracted {len(deduped_clients)} valid target (domain, country) pairs (NULL domains excluded)\n")
     return deduped_clients
