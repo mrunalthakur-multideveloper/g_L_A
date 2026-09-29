@@ -129,7 +129,14 @@ def get_neon_connection():
         return None
 
     try:
-        conn = psycopg2.connect(dsn, connect_timeout=15)
+        conn = psycopg2.connect(
+            dsn,
+            connect_timeout=30,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5
+        )
         conn.autocommit = True
         return conn
     except Exception as e:
@@ -223,8 +230,14 @@ def format_job_for_links_table(job: Any) -> Dict[str, Any]:
         pass
 
     raw_id = clean_job_id(j.job_id or j.id)
+    if not raw_id:
+        fallback_url = j.job_url or j.apply_url or ""
+        if fallback_url:
+            import hashlib
+            raw_id = hashlib.md5(fallback_url.encode("utf-8")).hexdigest()[:16]
+
     raw_desc = j.description or j.description_plain or j.description_html or ""
-    clean_desc = clean_description_text(raw_desc)
+    clean_desc = clean_description_text(raw_desc).replace('\x00', '')
 
     # Clean date_posted to YYYY-MM-DD for PostgreSQL date column
     date_val = None
@@ -334,10 +347,11 @@ to_12_tuple_record = to_tuple_record
 def save_jobs_to_neon(
     records: Any,
     table_name: str = "links",
-    batch_size: int = 100
+    batch_size: int = 200
 ) -> int:
     """
     Stores verified postings into Neon PostgreSQL public.links using execute_values.
+    Features automatic pooler reconnect, transaction rollback recovery, and live progress logging.
     
     CRITICAL - Prevent Batch Collision:
       Before executing the SQL upsert, strictly deduplicate the records in memory by job_id:
@@ -375,6 +389,10 @@ def save_jobs_to_neon(
 
     tuples = [to_tuple_record(r) for r in raw_deduped_records if r.get("job_id")]
     if not tuples:
+        try:
+            conn.close()
+        except Exception:
+            pass
         return 0
 
     # Full table qualified name
@@ -424,24 +442,106 @@ def save_jobs_to_neon(
         experience_max = COALESCE(EXCLUDED.experience_max, {full_table}.experience_max);
     """
 
+    total_records = len(tuples)
+    cur = conn.cursor()
+    last_reported = 0
+    idx = 0
+
     try:
-        with conn.cursor() as cur:
-            for i in range(0, len(tuples), batch_size):
-                batch = tuples[i:i + batch_size]
+        while idx < total_records:
+            batch = tuples[idx:idx + batch_size]
+            batch_success = False
+
+            # Up to 3 attempts with automatic connection recovery
+            for attempt in range(3):
                 try:
                     psycopg2.extras.execute_values(cur, upsert_sql, batch, page_size=len(batch))
                     total_saved += len(batch)
+                    batch_success = True
+                    break
                 except Exception as batch_err:
-                    # Retry record by record for robust resilience
-                    for single in batch:
+                    err_str = str(batch_err).lower()
+                    is_conn_error = (
+                        getattr(conn, "closed", 1) != 0
+                        or getattr(cur, "closed", True)
+                        or "closed" in err_str
+                        or "terminat" in err_str
+                        or "connection" in err_str
+                        or "ssl" in err_str
+                        or "broken pipe" in err_str
+                        or "operationalerror" in err_str
+                    )
+                    if is_conn_error:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        time.sleep(1.0)
+                        conn = get_neon_connection()
+                        if not conn:
+                            time.sleep(2.0)
+                            conn = get_neon_connection()
+                        if conn:
+                            cur = conn.cursor()
+                        continue
+                    else:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        break
+
+            # Fallback record-by-record with individual connection safety
+            if not batch_success:
+                for single in batch:
+                    for single_attempt in range(2):
                         try:
                             psycopg2.extras.execute_values(cur, upsert_sql, [single])
                             total_saved += 1
-                        except Exception:
-                            pass
-        conn.close()
+                            break
+                        except Exception as single_err:
+                            s_err_str = str(single_err).lower()
+                            is_conn_error = (
+                                getattr(conn, "closed", 1) != 0
+                                or getattr(cur, "closed", True)
+                                or "closed" in s_err_str
+                                or "connection" in s_err_str
+                                or "ssl" in s_err_str
+                            )
+                            if is_conn_error:
+                                try:
+                                    cur.close()
+                                    conn.close()
+                                except Exception:
+                                    pass
+                                time.sleep(1.0)
+                                conn = get_neon_connection()
+                                if conn:
+                                    cur = conn.cursor()
+                            else:
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
+                                break
+
+            idx += len(batch)
+            if total_records >= 500 and (total_saved - last_reported >= 1000 or idx >= total_records):
+                pct = (total_saved / total_records) * 100
+                print(f"       📊 Neon DB: {total_saved:,}/{total_records:,} jobs synced ({pct:.1f}%)...", flush=True)
+                last_reported = total_saved
+
     except Exception as e:
         print(f"⚠️ Error executing batch upsert to Neon DB: {e}")
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:
