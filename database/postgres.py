@@ -223,11 +223,56 @@ def format_job_for_links_table(job: Any) -> Dict[str, Any]:
     else:
         j = job
 
-    # Run complete enrichment engine to guarantee all fields are populated
-    try:
-        enrich_job(j)
-    except Exception:
-        pass
+    # Fast lightweight field normalization (preserves raw crawl for downstream AI classification)
+    if not j.location_country:
+        j.location_country = "USA"
+    if not j.job_type:
+        j.job_type = "Full-time"
+    if not j.job_level:
+        j.job_level = "Mid-Level"
+    if not j.job_function:
+        j.job_function = j.department or "Software Engineering"
+    if not j.company_industry:
+        j.company_industry = "Technology, Information and Internet"
+    if not j.company_url and j.job_url:
+        j.company_url = j.job_url
+
+    # Fast location city & state resolution if missing
+    loc_disp = j.location_display or ""
+    if not j.location_city and loc_disp:
+        from filters.usa import parse_us_location
+        city, state, _, is_rem = parse_us_location(loc_disp)
+        j.location_city = city or loc_disp.split(',')[0].strip()
+        if not j.location_state and state:
+            j.location_state = state
+
+    desc_sample = j.description or j.description_plain or j.description_html or ""
+    if not j.experience and desc_sample:
+        from classification.experience import extract_experience
+        j.experience = extract_experience(desc_sample, title=j.title)
+
+    # Fast experience range resolution if missing
+    if (j.experience_min is None or j.experience_max is None) and j.experience:
+        from classification.enrichment import parse_experience_range
+        e_min, e_max = parse_experience_range(j.experience)
+        if j.experience_min is None:
+            j.experience_min = e_min
+        if j.experience_max is None:
+            j.experience_max = e_max
+
+    if not j.emails and desc_sample:
+        from classification.enrichment import extract_emails_from_text
+        j.emails = extract_emails_from_text(desc_sample)
+
+    if (not j.salary_text or j.compensation_min is None) and desc_sample:
+        from classification.enrichment import extract_salary_info
+        c_min, c_max, cur, interval, s_text = extract_salary_info(desc_sample)
+        if s_text:
+            j.salary_text = s_text
+            j.compensation_min = c_min
+            j.compensation_max = c_max
+            j.compensation_currency = cur
+            j.compensation_interval = interval
 
     raw_id = clean_job_id(j.job_id or j.id)
     if not raw_id:
@@ -347,16 +392,14 @@ to_12_tuple_record = to_tuple_record
 def save_jobs_to_neon(
     records: Any,
     table_name: str = "links",
-    batch_size: int = 200
+    batch_size: int = 500
 ) -> int:
     """
     Stores verified postings into Neon PostgreSQL public.links using execute_values.
     Features automatic pooler reconnect, transaction rollback recovery, and live progress logging.
     
     CRITICAL - Prevent Batch Collision:
-      Before executing the SQL upsert, strictly deduplicate the records in memory by job_id:
-      df_sql = df.drop_duplicates(subset=["job_id"]).copy()
-      (This avoids PostgreSQL aborting with: ON CONFLICT DO UPDATE command cannot affect row a second time)
+      Before executing the SQL upsert, strictly deduplicate the records in memory by job_id.
     """
     conn = get_neon_connection()
     if not conn:
@@ -365,35 +408,36 @@ def save_jobs_to_neon(
     ensure_table_exists(conn, table_name)
     total_saved = 0
 
-    # In-memory deduplication by job_id using pandas drop_duplicates
-    raw_deduped_records: List[Dict[str, Any]] = []
+    # Fast direct set-based deduplication by job_id (avoids multi-minute DataFrame copying)
+    seen_ids = set()
+    tuples = []
+
     try:
         import pandas as pd
         if isinstance(records, pd.DataFrame):
-            df_sql = records.drop_duplicates(subset=["job_id"]).copy()
-            raw_deduped_records = [format_job_for_sql_upsert(r) for r in df_sql.to_dict(orient="records")]
+            recs = records.to_dict(orient="records")
         else:
-            formatted_list = [format_job_for_sql_upsert(r) for r in records if r]
-            if formatted_list:
-                df = pd.DataFrame(formatted_list)
-                df_sql = df.drop_duplicates(subset=["job_id"]).copy()
-                raw_deduped_records = df_sql.to_dict(orient="records")
+            recs = records
     except Exception:
-        seen_ids = set()
-        for r in records:
-            fmt = format_job_for_sql_upsert(r)
-            jid = fmt.get("job_id")
-            if jid and jid not in seen_ids:
-                seen_ids.add(jid)
-                raw_deduped_records.append(fmt)
+        recs = records
 
-    tuples = [to_tuple_record(r) for r in raw_deduped_records if r.get("job_id")]
+    for r in recs:
+        if not r:
+            continue
+        fmt = format_job_for_sql_upsert(r)
+        jid = fmt.get("job_id")
+        if jid and jid not in seen_ids:
+            seen_ids.add(jid)
+            tuples.append(to_tuple_record(fmt))
+
     if not tuples:
         try:
             conn.close()
         except Exception:
             pass
         return 0
+
+    print(f"       ⚡ Prepared {len(tuples):,} unique jobs for Neon DB sync. Streaming batches...", flush=True)
 
     # Full table qualified name
     full_table = f"public.{table_name}" if "." not in table_name else table_name
@@ -530,7 +574,7 @@ def save_jobs_to_neon(
                                 break
 
             idx += len(batch)
-            if total_records >= 500 and (total_saved - last_reported >= 1000 or idx >= total_records):
+            if total_records >= 200 and (total_saved - last_reported >= 500 or idx >= total_records):
                 pct = (total_saved / total_records) * 100
                 print(f"       📊 Neon DB: {total_saved:,}/{total_records:,} jobs synced ({pct:.1f}%)...", flush=True)
                 last_reported = total_saved
