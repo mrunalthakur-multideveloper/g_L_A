@@ -13,16 +13,45 @@ from dotenv import load_dotenv
 
 from models.job import NormalizedJob
 from output.csv_writer import clean_job_id, clean_description_text
+from classification.enrichment import enrich_job
 
 load_dotenv()
 
 # Neon / PostgreSQL Configuration
-NEON_DATABASE_URL = (
-    os.getenv("NEON_DATABASE_URL")
-    or os.getenv("DATABASE_URL")
-    or os.getenv("DEST_DATABASE_URL")
-    or os.getenv("POSTGRES_URL", "")
-).strip()
+def clean_database_url(url: Optional[str]) -> str:
+    """
+    Cleans and standardizes the database connection URL:
+    - Strips any duplicate 'DATABASE_URL=' or 'NEON_DATABASE_URL=' prefix
+    - Strips surrounding quotes (' or ") and whitespace
+    - Automatically appends sslmode=require for secure Neon DB connections
+    """
+    if not url:
+        return ""
+    val = str(url).strip().strip("'\"`")
+    while True:
+        m = re.match(r'^(?:DATABASE_URL|NEON_DATABASE_URL|POSTGRES_URL)\s*=\s*', val, re.IGNORECASE)
+        if m:
+            val = val[m.end():].strip().strip("'\"`")
+        else:
+            break
+    if val and "sslmode=" not in val.lower() and "sqlite" not in val.lower():
+        sep = "&" if "?" in val else "?"
+        val = f"{val}{sep}sslmode=require"
+    return val
+
+
+def get_database_url() -> str:
+    """Retrieves the cleaned Neon/PostgreSQL connection string."""
+    raw = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("NEON_DATABASE_URL")
+        or os.getenv("DEST_DATABASE_URL")
+        or os.getenv("POSTGRES_URL", "")
+    )
+    return clean_database_url(raw)
+
+
+NEON_DATABASE_URL = get_database_url()
 
 # Supabase Fallback Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
@@ -77,6 +106,8 @@ CREATE TABLE IF NOT EXISTS public.links (
   skills text null,
   sponsorship_h1b text null,
   source text null,
+  experience_min smallint null,
+  experience_max smallint null,
   constraint linkedin_jobs_pkey primary key (id),
   constraint linkedin_jobs_job_id_key unique (job_id)
 );
@@ -90,17 +121,12 @@ CREATE INDEX IF NOT EXISTS idx_linkedin_jobs_created_at ON public.links USING bt
 
 def get_neon_connection():
     """Establishes connection to Neon PostgreSQL using psycopg2 with sslmode=require."""
-    if not NEON_DATABASE_URL:
+    dsn = get_database_url()
+    if not dsn:
         return None
     if not psycopg2:
         print("⚠️ psycopg2 is not installed. Please install psycopg2-binary.")
         return None
-
-    dsn = NEON_DATABASE_URL
-    # Ensure sslmode=require is configured for Neon DB
-    if "sslmode=" not in dsn.lower():
-        sep = "&" if "?" in dsn else "?"
-        dsn = f"{dsn}{sep}sslmode=require"
 
     try:
         conn = psycopg2.connect(dsn, connect_timeout=15)
@@ -109,6 +135,7 @@ def get_neon_connection():
     except Exception as e:
         print(f"⚠️ Neon DB connection error: {e}")
         return None
+
 
 
 def get_supabase_client():
@@ -142,88 +169,153 @@ def ensure_table_exists(conn, table_name: str = "links"):
         print(f"ℹ️ Notice checking table schema: {e}")
 
 
-def format_job_for_links_table(job: NormalizedJob) -> Dict[str, Any]:
+def format_job_for_links_table(job: Any) -> Dict[str, Any]:
     """
-    Formats a NormalizedJob into the exact schema of public.links table:
-    - Clean numeric/alphanumeric job_id without platform prefix
-    - 100% clean plain-text description (HTML stripped & entities decoded)
-    - Formatted YYYY-MM-DD date_posted
+    Formats a NormalizedJob or dict into the exact 34-column schema of public.links table.
+    Enriches all missing fields (seniority, experience, salary, emails, job type, location)
+    so NO column is left empty if it can be inferred.
     """
-    raw_id = clean_job_id(job.job_id or job.id)
-    raw_desc = job.description or job.description_plain or job.description_html or ""
+    if isinstance(job, dict):
+        j = NormalizedJob(
+            id=str(job.get("job_id") or job.get("id") or ""),
+            job_id=str(job.get("job_id") or job.get("id") or ""),
+            title=job.get("title") or "",
+            company_name=job.get("company_name") or "",
+            company_url=job.get("company_url"),
+            company_logo=job.get("company_logo"),
+            department=job.get("department") or job.get("job_function"),
+            job_type=job.get("job_type"),
+            job_level=job.get("job_level"),
+            company_industry=job.get("company_industry"),
+            job_function=job.get("job_function") or job.get("department"),
+            location_display=job.get("location_display") or job.get("location") or "",
+            location_city=job.get("location_city"),
+            location_state=job.get("location_state"),
+            location_country=job.get("location_country") or "USA",
+            is_remote=bool(job.get("is_remote")),
+            date_posted=str(job.get("date_posted") or ""),
+            scraped_at=job.get("scraped_at"),
+            created_at=job.get("created_at"),
+            job_url=job.get("job_url") or job.get("apply_url") or "",
+            apply_url=job.get("apply_url") or job.get("job_url") or "",
+            compensation_min=job.get("compensation_min"),
+            compensation_max=job.get("compensation_max"),
+            compensation_currency=job.get("compensation_currency") or "USD",
+            compensation_interval=job.get("compensation_interval") or "yearly",
+            salary_text=job.get("salary_text"),
+            experience=job.get("experience"),
+            experience_min=job.get("experience_min"),
+            experience_max=job.get("experience_max"),
+            skills=job.get("skills") if isinstance(job.get("skills"), list) else [],
+            sponsorship_h1b=job.get("sponsorship_h1b") or "No",
+            emails=job.get("emails") if isinstance(job.get("emails"), list) else [],
+            search_keyword=job.get("search_keyword") or "",
+            description=job.get("description") or job.get("description_plain") or job.get("description_html") or "",
+            source=job.get("source") or "greenhouse"
+        )
+    else:
+        j = job
+
+    # Run complete enrichment engine to guarantee all fields are populated
+    try:
+        enrich_job(j)
+    except Exception:
+        pass
+
+    raw_id = clean_job_id(j.job_id or j.id)
+    raw_desc = j.description or j.description_plain or j.description_html or ""
     clean_desc = clean_description_text(raw_desc)
 
     # Clean date_posted to YYYY-MM-DD for PostgreSQL date column
     date_val = None
-    if job.date_posted:
-        date_str = str(job.date_posted).strip()
-        # ISO timestamp or date prefix
+    if j.date_posted:
+        date_str = str(j.date_posted).strip()
         date_match = re.search(r'(\d{4}-\d{2}-\d{2})', date_str)
         if date_match:
             date_val = date_match.group(1)
 
     # Compensation floats
     comp_min = None
-    if job.compensation_min is not None:
+    if j.compensation_min is not None:
         try:
-            comp_min = float(job.compensation_min)
+            comp_min = float(j.compensation_min)
         except (ValueError, TypeError):
             pass
 
     comp_max = None
-    if job.compensation_max is not None:
+    if j.compensation_max is not None:
         try:
-            comp_max = float(job.compensation_max)
+            comp_max = float(j.compensation_max)
         except (ValueError, TypeError):
             pass
 
     # Clean skills & emails representations
     skills_val = None
-    if job.skills:
-        skills_val = json.dumps(job.skills) if isinstance(job.skills, list) else str(job.skills)
+    if j.skills:
+        skills_val = json.dumps(j.skills) if isinstance(j.skills, list) else str(j.skills)
 
     emails_val = None
-    if job.emails:
-        emails_val = json.dumps(job.emails) if isinstance(job.emails, list) else str(job.emails)
+    if j.emails:
+        emails_val = json.dumps(j.emails) if isinstance(j.emails, list) else str(j.emails)
+
+    exp_min = None
+    if j.experience_min is not None:
+        try:
+            exp_min = int(j.experience_min)
+        except (ValueError, TypeError):
+            pass
+
+    exp_max = None
+    if j.experience_max is not None:
+        try:
+            exp_max = int(j.experience_max)
+        except (ValueError, TypeError):
+            pass
 
     return {
         "job_id": raw_id,
-        "title": job.title or "",
-        "company_name": job.company_name or "",
-        "company_url": job.company_url or "",
-        "company_logo": job.company_logo or "",
-        "location_city": job.location_city or "",
-        "location_state": job.location_state or "",
-        "location_country": job.location_country or "USA",
-        "location_display": job.location_display or job.location_city or "",
+        "title": j.title or "",
+        "company_name": j.company_name or "",
+        "company_url": j.company_url or "",
+        "company_logo": j.company_logo or "",
+        "location_city": j.location_city or "",
+        "location_state": j.location_state or "",
+        "location_country": j.location_country or "USA",
+        "location_display": j.location_display or j.location_city or "",
         "description": clean_desc,
         "date_posted": date_val,
-        "scraped_at": job.scraped_at or None,
-        "job_url": job.job_url or job.apply_url or "",
-        "apply_url": job.apply_url or job.job_url or "",
-        "job_type": job.job_type or "",
-        "job_level": job.job_level or "",
-        "company_industry": job.company_industry or None,
-        "job_function": job.department or job.job_function or None,
-        "is_remote": bool(job.is_remote),
-        "is_easy_apply": bool(job.is_easy_apply),
+        "scraped_at": j.scraped_at or None,
+        "job_url": j.job_url or j.apply_url or "",
+        "apply_url": j.apply_url or j.job_url or "",
+        "job_type": j.job_type or "Full-time",
+        "job_level": j.job_level or "Mid-Level",
+        "company_industry": j.company_industry or "Technology, Information and Internet",
+        "job_function": j.job_function or j.department or "Software Engineering",
+        "is_remote": bool(j.is_remote),
+        "is_easy_apply": bool(j.is_easy_apply),
         "compensation_min": comp_min,
         "compensation_max": comp_max,
-        "compensation_currency": job.compensation_currency or "USD",
-        "compensation_interval": job.compensation_interval or "yearly",
+        "compensation_currency": j.compensation_currency or ("EUR" if j.location_country == "Ireland" else "USD"),
+        "compensation_interval": j.compensation_interval or "yearly",
         "emails": emails_val,
-        "search_keyword": job.search_keyword or job.company_name or "",
-        "experience": job.experience or None,
-        "salary_text": job.salary_text or None,
-        "created_at": job.created_at or None,
+        "search_keyword": j.search_keyword or j.company_name or "",
+        "experience": j.experience or None,
+        "salary_text": j.salary_text or None,
+        "created_at": j.created_at or None,
         "skills": skills_val,
-        "sponsorship_h1b": job.sponsorship_h1b or "No",
-        "source": job.source or "greenhouse"
+        "sponsorship_h1b": j.sponsorship_h1b or "No",
+        "source": j.source or "greenhouse",
+        "experience_min": exp_min,
+        "experience_max": exp_max
     }
 
 
+# format_job_for_sql_upsert is identical to format_job_for_links_table
+format_job_for_sql_upsert = format_job_for_links_table
+
+
 def to_tuple_record(d: Dict[str, Any]) -> Tuple:
-    """Converts formatted dictionary to tuple ordered strictly by column order."""
+    """Converts formatted dictionary to 34-tuple ordered strictly by column order."""
     return (
         d["job_id"], d["title"], d["company_name"], d["company_url"], d["company_logo"],
         d["location_city"], d["location_state"], d["location_country"], d["location_display"],
@@ -232,18 +324,25 @@ def to_tuple_record(d: Dict[str, Any]) -> Tuple:
         d["is_remote"], d["is_easy_apply"], d["compensation_min"], d["compensation_max"],
         d["compensation_currency"], d["compensation_interval"], d["emails"],
         d["search_keyword"], d["experience"], d["salary_text"], d["created_at"],
-        d["skills"], d["sponsorship_h1b"], d["source"]
+        d["skills"], d["sponsorship_h1b"], d["source"], d["experience_min"], d["experience_max"]
     )
 
 
+to_12_tuple_record = to_tuple_record
+
+
 def save_jobs_to_neon(
-    records: List[Dict[str, Any]],
+    records: Any,
     table_name: str = "links",
     batch_size: int = 100
 ) -> int:
     """
-    Stores all scraped job records at once into Neon PostgreSQL table using execute_values.
-    Enforces ON CONFLICT (job_id) DO UPDATE.
+    Stores verified postings into Neon PostgreSQL public.links using execute_values.
+    
+    CRITICAL - Prevent Batch Collision:
+      Before executing the SQL upsert, strictly deduplicate the records in memory by job_id:
+      df_sql = df.drop_duplicates(subset=["job_id"]).copy()
+      (This avoids PostgreSQL aborting with: ON CONFLICT DO UPDATE command cannot affect row a second time)
     """
     conn = get_neon_connection()
     if not conn:
@@ -251,7 +350,32 @@ def save_jobs_to_neon(
 
     ensure_table_exists(conn, table_name)
     total_saved = 0
-    tuples = [to_tuple_record(r) for r in records if r.get("job_id")]
+
+    # In-memory deduplication by job_id using pandas drop_duplicates
+    raw_deduped_records: List[Dict[str, Any]] = []
+    try:
+        import pandas as pd
+        if isinstance(records, pd.DataFrame):
+            df_sql = records.drop_duplicates(subset=["job_id"]).copy()
+            raw_deduped_records = [format_job_for_sql_upsert(r) for r in df_sql.to_dict(orient="records")]
+        else:
+            formatted_list = [format_job_for_sql_upsert(r) for r in records if r]
+            if formatted_list:
+                df = pd.DataFrame(formatted_list)
+                df_sql = df.drop_duplicates(subset=["job_id"]).copy()
+                raw_deduped_records = df_sql.to_dict(orient="records")
+    except Exception:
+        seen_ids = set()
+        for r in records:
+            fmt = format_job_for_sql_upsert(r)
+            jid = fmt.get("job_id")
+            if jid and jid not in seen_ids:
+                seen_ids.add(jid)
+                raw_deduped_records.append(fmt)
+
+    tuples = [to_tuple_record(r) for r in raw_deduped_records if r.get("job_id")]
+    if not tuples:
+        return 0
 
     # Full table qualified name
     full_table = f"public.{table_name}" if "." not in table_name else table_name
@@ -265,39 +389,39 @@ def save_jobs_to_neon(
         is_remote, is_easy_apply, compensation_min, compensation_max,
         compensation_currency, compensation_interval, emails,
         search_keyword, experience, salary_text, created_at,
-        skills, sponsorship_h1b, source
+        skills, sponsorship_h1b, source, experience_min, experience_max
     ) VALUES %s
     ON CONFLICT (job_id) DO UPDATE SET
-        title = EXCLUDED.title,
-        company_name = EXCLUDED.company_name,
-        company_url = EXCLUDED.company_url,
-        company_logo = EXCLUDED.company_logo,
-        location_city = EXCLUDED.location_city,
-        location_state = EXCLUDED.location_state,
-        location_country = EXCLUDED.location_country,
-        location_display = EXCLUDED.location_display,
-        description = EXCLUDED.description,
-        date_posted = EXCLUDED.date_posted,
+        title = COALESCE(EXCLUDED.title, {full_table}.title),
+        company_name = COALESCE(EXCLUDED.company_name, {full_table}.company_name),
+        company_url = COALESCE(EXCLUDED.company_url, {full_table}.company_url),
+        company_logo = COALESCE(EXCLUDED.company_logo, {full_table}.company_logo),
+        location_city = COALESCE(EXCLUDED.location_city, {full_table}.location_city),
+        location_state = COALESCE(EXCLUDED.location_state, {full_table}.location_state),
+        location_country = COALESCE(EXCLUDED.location_country, {full_table}.location_country),
+        location_display = COALESCE(EXCLUDED.location_display, {full_table}.location_display),
+        description = COALESCE(EXCLUDED.description, {full_table}.description),
         scraped_at = EXCLUDED.scraped_at,
-        job_url = EXCLUDED.job_url,
-        apply_url = EXCLUDED.apply_url,
-        job_type = EXCLUDED.job_type,
-        job_level = EXCLUDED.job_level,
-        company_industry = EXCLUDED.company_industry,
-        job_function = EXCLUDED.job_function,
+        apply_url = COALESCE(EXCLUDED.apply_url, {full_table}.apply_url),
+        job_type = COALESCE(EXCLUDED.job_type, {full_table}.job_type),
+        job_level = COALESCE(EXCLUDED.job_level, {full_table}.job_level),
+        company_industry = COALESCE(EXCLUDED.company_industry, {full_table}.company_industry),
+        job_function = COALESCE(EXCLUDED.job_function, {full_table}.job_function),
         is_remote = EXCLUDED.is_remote,
         is_easy_apply = EXCLUDED.is_easy_apply,
-        compensation_min = EXCLUDED.compensation_min,
-        compensation_max = EXCLUDED.compensation_max,
-        compensation_currency = EXCLUDED.compensation_currency,
-        compensation_interval = EXCLUDED.compensation_interval,
-        emails = EXCLUDED.emails,
-        search_keyword = EXCLUDED.search_keyword,
-        experience = EXCLUDED.experience,
-        salary_text = EXCLUDED.salary_text,
-        skills = EXCLUDED.skills,
-        sponsorship_h1b = EXCLUDED.sponsorship_h1b,
-        source = EXCLUDED.source
+        compensation_min = COALESCE(EXCLUDED.compensation_min, {full_table}.compensation_min),
+        compensation_max = COALESCE(EXCLUDED.compensation_max, {full_table}.compensation_max),
+        compensation_currency = COALESCE(EXCLUDED.compensation_currency, {full_table}.compensation_currency),
+        compensation_interval = COALESCE(EXCLUDED.compensation_interval, {full_table}.compensation_interval),
+        emails = COALESCE(EXCLUDED.emails, {full_table}.emails),
+        search_keyword = COALESCE(EXCLUDED.search_keyword, {full_table}.search_keyword),
+        experience = COALESCE(EXCLUDED.experience, {full_table}.experience),
+        salary_text = COALESCE(EXCLUDED.salary_text, {full_table}.salary_text),
+        skills = COALESCE(EXCLUDED.skills, {full_table}.skills),
+        sponsorship_h1b = COALESCE(EXCLUDED.sponsorship_h1b, {full_table}.sponsorship_h1b),
+        source = COALESCE(EXCLUDED.source, {full_table}.source),
+        experience_min = COALESCE(EXCLUDED.experience_min, {full_table}.experience_min),
+        experience_max = COALESCE(EXCLUDED.experience_max, {full_table}.experience_max);
     """
 
     try:

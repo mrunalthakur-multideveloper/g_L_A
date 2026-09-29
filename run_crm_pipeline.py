@@ -34,6 +34,8 @@ def main():
     parser.add_argument("--no-db", action="store_true", help="Disable database synchronization")
     parser.add_argument("--domain", type=str, default=None, help="Optionally run for a specific domain only")
     parser.add_argument("--country", type=str, default="USA", help="Optionally override target country")
+    parser.add_argument("--mode", type=str, default="all", choices=["all", "title", "keyword"], help="Scraping mode: 'all', 'title' (Mode 1), or 'keyword' (Mode 2)")
+    parser.add_argument("--threshold", type=int, default=5, help="Keyword gatekeeper threshold for Mode 2 (default: 5)")
     parser.add_argument("--list-domains", action="store_true", help="Inspect and list target domains and database records")
 
     args = parser.parse_args()
@@ -43,13 +45,14 @@ def main():
         check_crm_domains.main()
         return
 
-
-
     override_clients = None
     if args.domain:
         override_clients = [{
+            "full_name": f"{args.domain} Override",
             "domain": args.domain,
             "normalized_domain": args.domain.strip().lower().replace(" ", "_"),
+            "desired_job_titles": [args.domain],
+            "keywords": [w for w in args.domain.split() if len(w) > 2],
             "country": args.country,
             "normalized_country": args.country.upper()
         }]
@@ -63,7 +66,9 @@ def main():
         sample_companies=args.sample,
         table_name=args.table,
         no_db=args.no_db,
-        override_clients=override_clients
+        override_clients=override_clients,
+        mode=args.mode,
+        gatekeeper_threshold=args.threshold
     )
 
 

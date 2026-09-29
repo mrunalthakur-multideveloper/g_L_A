@@ -54,6 +54,8 @@ class NormalizedJob:
     
     # Requirements & Auth
     experience: Optional[str] = None
+    experience_min: Optional[int] = None
+    experience_max: Optional[int] = None
     skills: List[str] = field(default_factory=list)
     sponsorship_h1b: str = "No"  # "Yes" | "No" | "Maybe"
     emails: List[str] = field(default_factory=list)

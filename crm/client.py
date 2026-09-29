@@ -21,19 +21,21 @@ load_dotenv()
 
 from utils.proxy import get_requests_session
 
-DEFAULT_CRM_URL = "https://api.applyus.org/api/clients/active"
+DEFAULT_CRM_URL = "https://api.applyus.org/api/clients/active-domains"
 
 
 def get_crm_url() -> str:
-    """Returns the data endpoint URL."""
+    """Returns the CRM active-domains endpoint URL."""
     backend_url = os.getenv("CRM_BACKEND_URL", "").strip()
     if backend_url:
         backend_url = backend_url.rstrip("/")
-        if backend_url.endswith("/api/clients/active"):
+        if backend_url.endswith("/api/clients/active-domains"):
             return backend_url
+        if backend_url.endswith("/api/clients/active"):
+            return backend_url.replace("/api/clients/active", "/api/clients/active-domains")
         if backend_url.endswith("/api"):
-            return f"{backend_url}/clients/active"
-        return f"{backend_url}/api/clients/active"
+            return f"{backend_url}/clients/active-domains"
+        return f"{backend_url}/api/clients/active-domains"
     return DEFAULT_CRM_URL
 
 
@@ -91,6 +93,7 @@ def fetch_active_clients(
 
     headers = {
         "Accept": "application/json",
+        "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Connection": "close"
     }
@@ -160,30 +163,28 @@ def fetch_active_clients(
     if not raw_clients_data and client_domain_env and not is_null_domain(client_domain_env):
         raw_clients_data = [{
             "domain": client_domain_env,
-            "country": os.getenv("TARGET_COUNTRY", "USA"),
-            "full_name": "Target Domain"
+            "desired_job_titles": [client_domain_env],
+            "keywords": [w for w in client_domain_env.split() if len(w) > 2],
+            "country": os.getenv("TARGET_COUNTRY", "United States"),
+            "full_name": "Target Domain Client"
         }]
         print(f"ℹ️ Loaded target domain from .env: '{client_domain_env}'")
 
-    # Extract domain & country pairs from desired_job_titles and domain with strict NULL skipping
-    seen_pairs = set()
+    # Ingest Client Profiles: full_name, domain, desired_job_titles, keywords, country
+    # Strictly skip records whose domain is NULL or empty
+    seen_clients = set()
     deduped_clients: List[Dict[str, Any]] = []
-
-    GENERIC_DOMAINS = {"engineering", "general", "technology", "it", "other", "all"}
-    client_domain_env = (os.getenv("CRM_CLIENT_DOMAIN") or os.getenv("CLIENT_DOMAIN") or "").strip()
 
     for item in raw_clients_data:
         if not isinstance(item, dict):
             continue
 
-        client_name = item.get("full_name") or f"{item.get('first_name', '')} {item.get('last_name', '')}".strip() or item.get("name", "Target")
-        country_raw = (
-            item.get("country")
-            or item.get("target_country")
-            or item.get("location_country")
-            or "USA"
+        full_name = (
+            item.get("full_name")
+            or f"{item.get('first_name', '')} {item.get('last_name', '')}".strip()
+            or item.get("name")
+            or "Candidate"
         ).strip()
-        norm_country = country_raw.upper() if country_raw else "USA"
 
         domain_raw = (
             item.get("domain")
@@ -194,51 +195,64 @@ def fetch_active_clients(
             or ""
         )
 
-        desired_titles = item.get("desired_job_titles") or []
-        if isinstance(desired_titles, str):
-            desired_titles = [desired_titles] if not is_null_domain(desired_titles) else []
-
-        # Collect candidate search domains from desired_job_titles and domain
-        candidate_domains: List[str] = []
-
-        # 1. Add valid titles from desired_job_titles
-        for dt in desired_titles:
-            if not is_null_domain(dt):
-                d_str = str(dt).strip()
-                if d_str and d_str.lower() not in GENERIC_DOMAINS and d_str not in candidate_domains:
-                    candidate_domains.append(d_str)
-
-        # 2. Add domain_raw if valid and not generic
-        if not is_null_domain(domain_raw):
-            d_raw_str = str(domain_raw).strip()
-            if d_raw_str and d_raw_str.lower() not in GENERIC_DOMAINS and d_raw_str not in candidate_domains:
-                candidate_domains.append(d_raw_str)
-
-        # STRICT NULL CHECK: If no valid search domains found, skip completely
-        if not candidate_domains:
-            print(f"  ⏭️ [SKIPPED] Record '{client_name}': domain is NULL / empty. Skipping.")
+        # STRICT NULL CHECK: If domain is NULL or empty, skip record completely
+        if is_null_domain(domain_raw):
+            print(f"  ⏭️ [SKIPPED] Record '{full_name}': domain is NULL / empty. Skipping.")
             continue
 
-        for domain_name in candidate_domains:
-            norm_domain = normalize_domain_key(domain_name)
-            if not norm_domain or is_null_domain(norm_domain):
-                continue
+        domain_str = str(domain_raw).strip()
+        norm_domain = normalize_domain_key(domain_str)
+        if not norm_domain:
+            continue
 
-            pair_key = (norm_domain, norm_country)
-            if pair_key in seen_pairs:
-                continue
-            seen_pairs.add(pair_key)
+        country_raw = (
+            item.get("country")
+            or item.get("target_country")
+            or item.get("location_country")
+            or "United States"
+        ).strip()
+        norm_country = country_raw.upper() if country_raw else "UNITED STATES"
 
-            deduped_clients.append({
-                "domain": domain_name,
-                "normalized_domain": norm_domain,
-                "country": country_raw or "USA",
-                "normalized_country": norm_country,
-                "client_name": client_name,
-                "client_id": item.get("lead_id") or item.get("id") or "",
-                "skills": item.get("skills") or [],
-                "raw": item
-            })
+        # Desired Job Titles
+        desired_titles_raw = item.get("desired_job_titles") or []
+        if isinstance(desired_titles_raw, str):
+            desired_titles_raw = [desired_titles_raw]
+        desired_titles: List[str] = []
+        for t in desired_titles_raw:
+            t_str = str(t).strip()
+            if t_str and not is_null_domain(t_str) and t_str not in desired_titles:
+                desired_titles.append(t_str)
+        if not desired_titles:
+            desired_titles = [domain_str]
+
+        # Keywords (25-35 skill/tool/framework keywords)
+        keywords_raw = item.get("keywords") or item.get("skills") or []
+        if isinstance(keywords_raw, str):
+            keywords_raw = [k.strip() for k in keywords_raw.split(",") if k.strip()]
+        keywords: List[str] = []
+        for k in keywords_raw:
+            k_str = str(k).strip()
+            if k_str and not is_null_domain(k_str) and k_str not in keywords:
+                keywords.append(k_str)
+
+        # Prevent exact duplicate client registrations
+        client_key = (full_name.lower(), norm_domain, norm_country)
+        if client_key in seen_clients:
+            continue
+        seen_clients.add(client_key)
+
+        deduped_clients.append({
+            "full_name": full_name,
+            "domain": domain_str,
+            "normalized_domain": norm_domain,
+            "desired_job_titles": desired_titles,
+            "keywords": keywords,
+            "country": country_raw or "United States",
+            "normalized_country": norm_country,
+            "client_name": full_name,
+            "client_id": str(item.get("lead_id") or item.get("id") or ""),
+            "raw": item
+        })
 
     # Save to local cache for offline resilience
     if deduped_clients:
@@ -248,5 +262,5 @@ def fetch_active_clients(
         except Exception:
             pass
 
-    print(f"🎯 Extracted {len(deduped_clients)} valid target (domain, country) pairs (NULL domains excluded)\n")
+    print(f"🎯 Extracted {len(deduped_clients)} active client profiles (NULL domains excluded)\n")
     return deduped_clients

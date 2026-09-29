@@ -30,14 +30,17 @@ def main():
     print(f"\n📡 1. Querying Target Domains Route: {get_crm_url()}...")
     active_clients = fetch_active_clients()
 
-    print("\n📋 TARGET DOMAINS:")
-    print(f"{'#':<3} {'DOMAIN':<35} {'COUNTRY':<12}")
-    print("-" * 75)
+    print("\n📋 ACTIVE CLIENT PROFILES (CRM API):")
+    print(f"{'#':<3} {'CLIENT NAME':<20} {'DOMAIN':<26} {'COUNTRY':<14} {'TITLES':<8} {'KEYWORDS':<8}")
+    print("-" * 85)
     if active_clients:
         for idx, c in enumerate(active_clients, 1):
-            print(f"{idx:<3} {c['domain']:<35} {c['country']:<12}")
+            titles_cnt = len(c.get('desired_job_titles', []))
+            kws_cnt = len(c.get('keywords', []))
+            name = c.get('full_name') or c.get('client_name') or 'Client'
+            print(f"{idx:<3} {name:<20} {c['domain']:<26} {c['country']:<14} {titles_cnt:<8} {kws_cnt:<8}")
     else:
-        print("  (No target domains returned from endpoint or cache)")
+        print("  (No active client profiles returned from endpoint or cache)")
 
     # 2. Inspect Neon Database Domains
     print("\n" + "=" * 75)

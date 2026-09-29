@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from models.job import NormalizedJob
 from filters.usa import is_us_location, parse_us_location
+from filters.country import is_country_location, parse_country_location
 from filters.date import matches_date_filter
 
 _LOGO_CACHE = {}
@@ -57,19 +58,21 @@ def clean_html_to_plain(raw_html: str) -> str:
 
 
 def extract_salary_range(text: str):
-    """Extract salary min, max, interval from text"""
+    """Extract salary min, max, currency, interval, and formatted text"""
     if not text:
-        return None, None, None, None
+        return None, None, None, None, None
     text_lower = text.lower()
-    matches = re.findall(r'\$\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])\s*(?:-|–|to)\s*\$\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])', text)
+    matches = re.findall(r'([$€£])\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])\s*(?:-|–|—|\s*to\s*)\s*[$€£]?\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])', text)
     if matches:
         m = matches[0]
-        v1 = float(m[0].replace(',', '').replace('K', '000').replace('k', '000'))
-        v2 = float(m[1].replace(',', '').replace('K', '000').replace('k', '000'))
-        interval = "hourly" if "hour" in text_lower or "/hr" in text_lower else "annual"
-        sal_text = f"${v1:,.0f} - ${v2:,.0f}/{interval}"
-        return min(v1, v2), max(v1, v2), "USD", sal_text
-    return None, None, None, None
+        sym = m[0]
+        cur = "EUR" if sym == "€" else ("GBP" if sym == "£" else "USD")
+        v1 = float(m[1].replace(',', '').replace('K', '000').replace('k', '000'))
+        v2 = float(m[2].replace(',', '').replace('K', '000').replace('k', '000'))
+        interval = "hourly" if "hour" in text_lower or "/hr" in text_lower else "yearly"
+        sal_text = f"{sym}{v1:,.0f} - {sym}{v2:,.0f}/{interval}"
+        return min(v1, v2), max(v1, v2), cur, interval, sal_text
+    return None, None, None, None, None
 
 
 def extract_work_auth(text: str) -> str:
@@ -90,7 +93,8 @@ def scrape_ashby_company(
     slug: str,
     target_date: Optional[str] = None,
     last_24_hours: bool = False,
-    hours_window: Optional[int] = None
+    hours_window: Optional[int] = None,
+    target_country: Optional[str] = None
 ) -> List[NormalizedJob]:
     """Scrapes all matching jobs for an Ashby company slug"""
     api_url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
@@ -111,9 +115,16 @@ def scrape_ashby_company(
                 address_dict = item.get("address") or {}
                 secondary_locs = item.get("secondaryLocations") or []
                 
-                # USA Location Filter
-                if not is_us_location(location_name, address_dict, secondary_locs):
-                    continue
+                # Country Location Filter
+                if target_country:
+                    if not is_country_location(location_name, target_country=target_country, address_dict=address_dict, secondary_locations=secondary_locs):
+                        continue
+                    city, state, country, is_remote = parse_country_location(location_name, target_country=target_country)
+                else:
+                    # Default USA Location Filter for backwards compatibility
+                    if not is_us_location(location_name, address_dict, secondary_locs):
+                        continue
+                    city, state, country, is_remote = parse_us_location(location_name)
                     
                 # Date Filter
                 published_at = item.get("publishedAt")
@@ -122,15 +133,14 @@ def scrape_ashby_company(
 
                 if logo is None:
                     logo = extract_ashby_logo(slug)
-                    
-                city, state, country, is_remote = parse_us_location(location_name)
+
                 if item.get("isRemote"):
                     is_remote = True
                     
                 raw_html = item.get("descriptionHtml") or ""
                 plain_desc = clean_html_to_plain(raw_html) or item.get("descriptionPlain") or ""
                 
-                sal_min, sal_max, sal_curr, sal_text = extract_salary_range(plain_desc)
+                sal_min, sal_max, sal_curr, sal_interval, sal_text = extract_salary_range(plain_desc)
                 
                 # Supplement structured compensation summary if present
                 comp = item.get("compensation") or {}
@@ -156,14 +166,15 @@ def scrape_ashby_company(
                     location_display=location_name,
                     location_city=city,
                     location_state=state,
-                    location_country="USA",
+                    location_country=country,
                     is_remote=is_remote,
                     date_posted=str(item.get("publishedAt")),
                     job_url=item.get("jobUrl") or f"https://jobs.ashbyhq.com/{slug}/{item.get('id')}",
                     apply_url=item.get("applyUrl") or f"https://jobs.ashbyhq.com/{slug}/{item.get('id')}/application",
                     compensation_min=sal_min,
                     compensation_max=sal_max,
-                    compensation_currency=sal_curr or "USD",
+                    compensation_currency=sal_curr or ("EUR" if country == "Ireland" else "USD"),
+                    compensation_interval=sal_interval or "yearly",
                     salary_text=sal_text,
                     sponsorship_h1b=auth,
                     search_keyword=slug,

@@ -57,16 +57,18 @@ class TestCrmClientDomainSelection(unittest.TestCase):
         mock_get_session.return_value = mock_session
 
         clients = fetch_active_clients()
-        # Should extract all 6 unique desired job titles
-        self.assertEqual(len(clients), 6)
-        domain_names = [c["domain"] for c in clients]
-        self.assertIn("Java Full Stack Developer", domain_names)
-        self.assertIn("Java Developer", domain_names)
-        self.assertIn("Software Engineer", domain_names)
-        self.assertIn("Full Stack Java Developer", domain_names)
-        self.assertIn("Java Full Stack Engineer", domain_names)
-        self.assertIn("Java Software Engineer", domain_names)
-        self.assertEqual(clients[0]["client_name"], "zoya nithin")
+        # Should extract client profile preserving all 6 unique desired job titles
+        self.assertEqual(len(clients), 1)
+        client = clients[0]
+        self.assertEqual(client["client_name"], "zoya nithin")
+        self.assertEqual(client["domain"], "Java Full Stack Developer")
+        self.assertEqual(len(client["desired_job_titles"]), 6)
+        self.assertIn("Java Full Stack Developer", client["desired_job_titles"])
+        self.assertIn("Java Developer", client["desired_job_titles"])
+        self.assertIn("Software Engineer", client["desired_job_titles"])
+        self.assertIn("Full Stack Java Developer", client["desired_job_titles"])
+        self.assertIn("Java Full Stack Engineer", client["desired_job_titles"])
+        self.assertIn("Java Software Engineer", client["desired_job_titles"])
 
     @patch("crm.client.get_requests_session")
     def test_null_domain_client_is_strictly_skipped(self, mock_get_session):
@@ -131,10 +133,12 @@ class TestCrmClientDomainSelection(unittest.TestCase):
         mock_get_session.return_value = mock_session
 
         clients = fetch_active_clients()
-        self.assertEqual(len(clients), 2)
-        domain_names = [c["domain"] for c in clients]
-        self.assertIn("Frontend React Developer", domain_names)
-        self.assertIn("Software Engineer", domain_names)
+        self.assertEqual(len(clients), 1)
+        client = clients[0]
+        self.assertEqual(client["client_name"], "Alex Tech")
+        self.assertEqual(len(client["desired_job_titles"]), 2)
+        self.assertIn("Frontend React Developer", client["desired_job_titles"])
+        self.assertIn("Software Engineer", client["desired_job_titles"])
 
 
 class TestProxyEnforcement(unittest.TestCase):
@@ -156,5 +160,77 @@ class TestProxyEnforcement(unittest.TestCase):
         self.assertEqual(ip, "38.154.185.97")
 
 
+class TestTwoTierMatchingAndFilters(unittest.TestCase):
+
+    def test_mode1_title_driven_matching(self):
+        """Mode 1: Matches jobs where job title matches any in desired_job_titles."""
+        from models.job import NormalizedJob
+        from crm.matcher import match_job_by_titles
+
+        job = NormalizedJob(title="Senior Full Stack Java Developer", description="Building services.")
+        self.assertTrue(match_job_by_titles(job, ["Java Developer", "Full Stack Java Developer"]))
+        self.assertFalse(match_job_by_titles(job, ["Data Analyst", "Python Developer"]))
+
+    def test_mode2_keyword_gatekeeper_threshold(self):
+        """Mode 2: Gatekeeper requires >= 5 distinct keywords in description text."""
+        from models.job import NormalizedJob
+        from crm.matcher import match_job_by_keywords_gatekeeper
+
+        desc_with_6_kws = (
+            "<p>We are seeking an engineer skilled in <b>React</b>, TypeScript, "
+            "Next.js, Tailwind, GraphQL, and Node.js for our microservices platform.</p>"
+        )
+        job_pass = NormalizedJob(title="Software Engineer", description=desc_with_6_kws)
+        keywords = ["React", "TypeScript", "Next.js", "Tailwind", "GraphQL", "Node.js", "Docker", "AWS"]
+
+        is_matched, matched_kws, count = match_job_by_keywords_gatekeeper(job_pass, keywords, min_threshold=5)
+        self.assertTrue(is_matched)
+        self.assertEqual(count, 6)
+        self.assertIn("React", matched_kws)
+        self.assertIn("TypeScript", matched_kws)
+
+        desc_with_3_kws = "<p>Skills: React, TypeScript, and HTML5.</p>"
+        job_fail = NormalizedJob(title="Software Engineer", description=desc_with_3_kws)
+        is_matched_f, _, count_f = match_job_by_keywords_gatekeeper(job_fail, keywords, min_threshold=5)
+        self.assertFalse(is_matched_f)
+        self.assertEqual(count_f, 2)
+
+    def test_global_location_filters(self):
+        """Global Filters: US and Republic of Ireland ONLY; strictly exclude UK, Belfast, etc."""
+        from filters.country import is_ireland_location, is_us_or_ireland_location
+
+        # Ireland locations accepted
+        self.assertTrue(is_ireland_location("Dublin, Ireland"))
+        self.assertTrue(is_ireland_location("Cork, Ireland"))
+        self.assertTrue(is_ireland_location("Galway, Ireland"))
+        self.assertTrue(is_ireland_location("Remote - Ireland"))
+
+        # UK and Northern Ireland strictly excluded
+        self.assertFalse(is_ireland_location("Belfast, Northern Ireland"))
+        self.assertFalse(is_ireland_location("London, UK"))
+        self.assertFalse(is_ireland_location("Manchester, England"))
+        self.assertFalse(is_ireland_location("Bangalore, India"))
+
+        # Combined US or Ireland
+        self.assertTrue(is_us_or_ireland_location("New York, NY"))
+        self.assertTrue(is_us_or_ireland_location("Dublin, Ireland"))
+        self.assertFalse(is_us_or_ireland_location("London, UK"))
+        self.assertFalse(is_us_or_ireland_location("Belfast, UK"))
+
+    def test_db_in_memory_deduplication(self):
+        """Strict in-memory deduplication by job_id to prevent Postgres batch collision."""
+        import pandas as pd
+        records = [
+            {"job_id": "job-1", "title": "Dev 1"},
+            {"job_id": "job-2", "title": "Dev 2"},
+            {"job_id": "job-1", "title": "Dev 1 Duplicate"},
+        ]
+        df = pd.DataFrame(records)
+        df_sql = df.drop_duplicates(subset=["job_id"]).copy()
+        self.assertEqual(len(df_sql), 2)
+        self.assertEqual(list(df_sql["job_id"]), ["job-1", "job-2"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

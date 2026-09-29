@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from models.job import NormalizedJob
 from filters.usa import is_us_location, parse_us_location
+from filters.country import is_country_location, parse_country_location
 from filters.date import matches_date_filter
 
 _LOGO_CACHE = {}
@@ -61,19 +62,21 @@ def clean_html_to_plain(raw_html: str) -> str:
 
 
 def extract_salary_range(text: str):
-    """Extract salary min, max, interval from text"""
+    """Extract salary min, max, currency, interval, and formatted text"""
     if not text:
-        return None, None, None, None
+        return None, None, None, None, None
     text_lower = text.lower()
-    matches = re.findall(r'\$\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])\s*(?:-|–|to)\s*\$\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])', text)
+    matches = re.findall(r'([$€£])\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])\s*(?:-|–|—|\s*to\s*)\s*[$€£]?\s*(\d{2,3}(?:,\d{3})?|\d{2,3}[kK])', text)
     if matches:
         m = matches[0]
-        v1 = float(m[0].replace(',', '').replace('K', '000').replace('k', '000'))
-        v2 = float(m[1].replace(',', '').replace('K', '000').replace('k', '000'))
-        interval = "hourly" if "hour" in text_lower or "/hr" in text_lower else "annual"
-        sal_text = f"${v1:,.0f} - ${v2:,.0f}/{interval}"
-        return min(v1, v2), max(v1, v2), "USD", sal_text
-    return None, None, None, None
+        sym = m[0]
+        cur = "EUR" if sym == "€" else ("GBP" if sym == "£" else "USD")
+        v1 = float(m[1].replace(',', '').replace('K', '000').replace('k', '000'))
+        v2 = float(m[2].replace(',', '').replace('K', '000').replace('k', '000'))
+        interval = "hourly" if "hour" in text_lower or "/hr" in text_lower else "yearly"
+        sal_text = f"{sym}{v1:,.0f} - {sym}{v2:,.0f}/{interval}"
+        return min(v1, v2), max(v1, v2), cur, interval, sal_text
+    return None, None, None, None, None
 
 
 def extract_work_auth(text: str) -> str:
@@ -94,7 +97,8 @@ def scrape_greenhouse_company(
     slug: str,
     target_date: Optional[str] = None,
     last_24_hours: bool = False,
-    hours_window: Optional[int] = None
+    hours_window: Optional[int] = None,
+    target_country: Optional[str] = None
 ) -> List[NormalizedJob]:
     """Scrapes all matching jobs for a Greenhouse company slug"""
     api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
@@ -113,9 +117,16 @@ def scrape_greenhouse_company(
             for item in raw_job_list:
                 location_name = item.get("location", {}).get("name") or ""
                 
-                # USA Location Filter
-                if not is_us_location(location_name):
-                    continue
+                # Country Location Filter
+                if target_country:
+                    if not is_country_location(location_name, target_country=target_country):
+                        continue
+                    city, state, country, is_remote = parse_country_location(location_name, target_country=target_country)
+                else:
+                    # Default USA Location Filter for backwards compatibility
+                    if not is_us_location(location_name):
+                        continue
+                    city, state, country, is_remote = parse_us_location(location_name)
                     
                 # Date Filter
                 updated_at = item.get("updated_at")
@@ -124,12 +135,11 @@ def scrape_greenhouse_company(
 
                 if logo is None:
                     logo = extract_greenhouse_logo(slug)
-                    
-                city, state, country, is_remote = parse_us_location(location_name)
+
                 raw_content = item.get("content") or ""
                 plain_desc = clean_html_to_plain(raw_content)
                 
-                sal_min, sal_max, sal_curr, sal_text = extract_salary_range(plain_desc)
+                sal_min, sal_max, sal_curr, sal_interval, sal_text = extract_salary_range(plain_desc)
                 auth = extract_work_auth(plain_desc)
                 
                 dept_name = None
@@ -151,14 +161,15 @@ def scrape_greenhouse_company(
                     location_display=location_name,
                     location_city=city,
                     location_state=state,
-                    location_country="USA",
+                    location_country=country,
                     is_remote=is_remote,
                     date_posted=item.get("updated_at"),
                     job_url=item.get("absolute_url") or f"https://boards.greenhouse.io/{slug}/jobs/{item.get('id')}",
                     apply_url=item.get("absolute_url") or f"https://boards.greenhouse.io/{slug}/jobs/{item.get('id')}",
                     compensation_min=sal_min,
                     compensation_max=sal_max,
-                    compensation_currency=sal_curr or "USD",
+                    compensation_currency=sal_curr or ("EUR" if country == "Ireland" else "USD"),
+                    compensation_interval=sal_interval or "yearly",
                     salary_text=sal_text,
                     sponsorship_h1b=auth,
                     search_keyword=slug,
