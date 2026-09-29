@@ -15,7 +15,6 @@ from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from models.job import NormalizedJob
-from classification.classifier import classify_job
 from classification.enrichment import enrich_job
 from scrapers.greenhouse import scrape_greenhouse_company
 from scrapers.lever import scrape_lever_company
@@ -215,19 +214,17 @@ def run_crm_domain_pipeline(
 
         print(f"🔍 Unique post-filtering jobs available for evaluation: {len(deduped_jobs):,}\n")
 
-        # Enrich and classify jobs so that seniority, experience, skills, emails, and job type are populated
+        # Save ALL raw crawled jobs directly for AI classification
         if deduped_jobs:
-            print(f"🧠 Enriching and classifying {len(deduped_jobs):,} jobs (Seniority, Experience, Location, Emails)...", flush=True)
-            for j in deduped_jobs:
-                try:
-                    classify_job(j)
-                except Exception:
-                    pass
-                try:
-                    enrich_job(j)
-                except Exception:
-                    pass
-            print(f"✅ Successfully enriched {len(deduped_jobs):,} jobs with all structured fields\n", flush=True)
+            master_raw_csv = f"output/crm/all_crawled_raw_{country.lower()}_jobs.csv"
+            write_jobs_to_csv(master_raw_csv, deduped_jobs)
+            print(f"💾 Master Raw File: Saved {len(deduped_jobs):,} raw crawled jobs to '{master_raw_csv}'")
+
+            if not no_db:
+                print(f"📤 Syncing ALL {len(deduped_jobs):,} raw crawled jobs to Neon DB ('public.{table_name}')...", flush=True)
+                db_all_saved = save_jobs_to_neon(deduped_jobs, table_name=table_name)
+                total_synced_records += db_all_saved
+                print(f"✅ Synced {db_all_saved:,} total raw crawled jobs to Neon DB ('public.{table_name}') for AI classification\n", flush=True)
 
         # 4. Evaluate each client in this country
         for client_idx, client in enumerate(client_list, 1):

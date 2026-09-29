@@ -35,9 +35,10 @@ US_COUNTRY_KEYWORDS = [
 
 NON_US_EXCLUSIONS = [
     r'\bcanada\b', r'\buk\b', r'\bunited\s*kingdom\b', r'\blondon\b', r'\bgermany\b', r'\bberlin\b',
-    r'\bfrance\b', r'\bparis\b', r'\bindia\b', r'\bbangalore\b', r'\bhyderabad\b', r'\baustralia\b',
-    r'\bsydney\b', r'\bnetherlands\b', r'\bamsterdam\b', r'\bsingapore\b', r'\bireland\b', r'\bdublin\b',
-    r'\bbrazil\b', r'\bmexico\b', r'\bspain\b', r'\bpoland\b', r'\bsweden\b', r'\bswitzerland\b'
+    r'\bfrance\b', r'\bparis\b', r'\bindia\b', r'\bbangalore\b', r'\bhyderabad\b', r'\bjaipur\b',
+    r'\bpune\b', r'\bmumbai\b', r'\bdelhi\b', r'\bchennai\b', r'\bnoida\b', r'\bgurgaon\b', r'\bgurugram\b',
+    r'\baustralia\b', r'\bsydney\b', r'\bnetherlands\b', r'\bamsterdam\b', r'\bsingapore\b', r'\bireland\b',
+    r'\bdublin\b', r'\bbrazil\b', r'\bmexico\b', r'\bspain\b', r'\bpoland\b', r'\bsweden\b', r'\bswitzerland\b'
 ]
 
 
